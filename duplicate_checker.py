@@ -4,21 +4,35 @@ duplicate_checker.py
 Công cụ Streamlit để kiểm tra trùng hồ sơ trước khi phê duyệt.
 - Tập trung vào dữ liệu ĐẤT Ở (Land) import từ file Excel iFast.
 - So sánh các hồ sơ đang ở trạng thái "Phê duyệt" với các hồ sơ "Hoàn thành".
-- Rule trùng:
-    + Trùng 5 thông tin địa chỉ:
-      (Tỉnh/Thành phố, Quận/Huyện/Thị xã, Xã/Phường, Đường/Phố, Số nhà)
-    + Và/hoặc trùng tọa độ:
-      - Tọa độ trùng 100%
-      - Hoặc trùng gần đúng (cắt bớt vài số ở cuối để bắt case kiểu
-        "12.670322,108.101062" và "12.6703222,108.1010623")
 
-Kết quả trả về:
-- ID hồ sơ Phê duyệt
-- Người tạo (hồ sơ Phê duyệt)
-- Lý do trùng (Cảnh báo / Nghi ngờ + mô tả)
-- Địa chỉ/Tọa độ trùng
-- ID trùng với (các ID Hoàn thành liên quan)
-- Người tạo trùng (Người tạo của các hồ sơ Hoàn thành)
+Rule trùng chính:
+
+1) TRÙNG TỌA ĐỘ (ưu tiên, chắc chắn):
+   - Tọa độ chuẩn hóa (coord_norm) trùng nhau
+   - Và 'Thời điểm thu thập thông tin' của hồ sơ Phê duyệt > hồ sơ Hoàn thành
+   → Luôn gắn nhãn: CẢNH BÁO TRÙNG
+   (Không cần xét Người tạo)
+
+2) TRÙNG ĐỊA CHỈ (5 cột W,X,Y,Z,AE):
+   - Trùng 5 thông tin:
+        Tỉnh/Thành phố
+        Quận/Huyện/Thị xã
+        Xã/Phường
+        Đường/Phố
+        Số nhà
+   - Và 'Thời điểm thu thập thông tin' của hồ sơ Phê duyệt > hồ sơ Hoàn thành
+   - Nếu cùng Người tạo  → CẢNH BÁO TRÙNG
+   - Nếu khác Người tạo → NGHI NGỜ TRÙNG
+
+Kết quả hiển thị:
+- ID                : ID hồ sơ Phê duyệt
+- Người tạo         : Người tạo hồ sơ Phê duyệt
+- Lý do trùng       : Cảnh báo / Nghi ngờ + mô tả chi tiết
+- Địa chỉ/Tọa độ trùng:
+    + Nếu trùng địa chỉ → hiển thị đầy đủ địa chỉ: Số nhà – Đường – Xã – Quận – Tỉnh
+    + Nếu trùng tọa độ → hiển thị tọa độ
+- ID trùng          : các ID Hoàn thành trùng (ngăn cách '; ')
+- Người tạo trùng   : Người tạo của các hồ sơ Hoàn thành trùng
 """
 
 from __future__ import annotations
@@ -40,16 +54,16 @@ except ImportError:  # pragma: no cover
 # ==========================
 
 ADDR_COLS = [
-    "Tỉnh/Thành phố",
-    "Quận/Huyện/Thị xã",
-    "Xã/Phường",
-    "Đường/Phố",
-    "Số nhà",
+    "Tỉnh/Thành phố",       # W
+    "Quận/Huyện/Thị xã",    # X
+    "Xã/Phường",            # Y
+    "Đường/Phố",            # Z
+    "Số nhà",               # AE
 ]
 
-CREATOR_COL = "Người tạo"
-TIME_COL = "Thời điểm thu thập thông tin"
-COORD_COL = "Tọa độ"
+CREATOR_COL = "Người tạo"                     # cột E
+TIME_COL = "Thời điểm thu thập thông tin"     # cột L
+COORD_COL = "Tọa độ"                          # cột AF
 
 
 def build_addr_key(row: pd.Series) -> str:
@@ -91,7 +105,7 @@ def format_address(row: pd.Series) -> str:
     """
     Hiển thị địa chỉ theo thứ tự:
     Số nhà – Đường/Phố – Xã/Phường – Quận/Huyện/Thị xã – Tỉnh/Thành phố
-    (AE – Z – Y – X – W trong file Excel gốc)
+    (tương ứng AE – Z – Y – X – W)
     """
     num = str(row.get("Số nhà", "")).strip()
     street = str(row.get("Đường/Phố", "")).strip()
@@ -111,9 +125,10 @@ def check_duplicates(df: pd.DataFrame) -> pd.DataFrame:
 
     Rule chi tiết:
 
-    1) Trùng tọa độ (coord_norm giống nhau) và
-       Thời điểm thu thập của Phê duyệt > Hoàn thành
-       → luôn CẢNH BÁO TRÙNG (không cần xét Người tạo)
+    1) Trùng tọa độ:
+       - coord_norm giống nhau
+       - Thời điểm thu thập (time_norm) của Phê duyệt > Hoàn thành
+       → luôn CẢNH BÁO TRÙNG
 
     2) Trùng địa chỉ (5 cột), thời điểm Phê duyệt > Hoàn thành:
        - Nếu cùng Người tạo → CẢNH BÁO TRÙNG
@@ -153,7 +168,7 @@ def check_duplicates(df: pd.DataFrame) -> pd.DataFrame:
     hoan_thanh["coord_norm"] = hoan_thanh[COORD_COL].apply(normalize_coord)
     phe_duyet["coord_norm"] = phe_duyet[COORD_COL].apply(normalize_coord)
 
-    # Chuẩn hóa thời gian (dd/mm/yyyy -> dayfirst=True)
+    # Chuẩn hóa thời gian (dd/mm/yyyy → dayfirst=True)
     hoan_thanh["time_norm"] = pd.to_datetime(
         hoan_thanh[TIME_COL], dayfirst=True, errors="coerce"
     )
@@ -161,13 +176,13 @@ def check_duplicates(df: pd.DataFrame) -> pd.DataFrame:
         phe_duyet[TIME_COL], dayfirst=True, errors="coerce"
     )
 
-    # Build group lookup cho Hoàn thành
-    addr_groups: Dict[str, List[int]] = hoan_thanh.groupby("addr_key").groups
-    coord_groups: Dict[str, List[int]] = hoan_thanh.groupby("coord_norm").groups
+    # Build group lookup cho Hoàn thành (groups trả về dict: key -> Index)
+    addr_groups = hoan_thanh.groupby("addr_key").groups
+    coord_groups = hoan_thanh.groupby("coord_norm").groups
 
     results: List[Dict[str, Any]] = []
 
-    for idx, row in phe_duyet.iterrows():
+    for _, row in phe_duyet.iterrows():
         duplicate_ids: set[Any] = set()
         duplicate_creators: set[str] = set()
         severity_levels: set[str] = set()  # {"Cảnh báo trùng", "Nghi ngờ trùng"}
@@ -179,10 +194,10 @@ def check_duplicates(df: pd.DataFrame) -> pd.DataFrame:
         row_time = row.get("time_norm")
 
         # ==============
-        # Trùng địa chỉ
+        # Rule 2: Trùng địa chỉ
         # ==============
-        addr_indices = addr_groups.get(addr_key, [])
-        if addr_indices:
+        addr_indices = addr_groups.get(addr_key)
+        if addr_indices is not None and len(addr_indices) > 0:
             candidates_addr = hoan_thanh.loc[addr_indices].copy()
 
             # Chỉ lấy các hồ sơ Hoàn thành có thời điểm < Phê duyệt
@@ -223,10 +238,10 @@ def check_duplicates(df: pd.DataFrame) -> pd.DataFrame:
                     )
 
         # ==============
-        # Trùng tọa độ
+        # Rule 1: Trùng tọa độ (luôn Cảnh báo)
         # ==============
-        coord_indices = coord_groups.get(coord_key, [])
-        if coord_indices:
+        coord_indices = coord_groups.get(coord_key)
+        if coord_indices is not None and len(coord_indices) > 0:
             candidates_coord = hoan_thanh.loc[coord_indices].copy()
 
             # Chỉ lấy Hoàn thành có thời điểm < Phê duyệt
@@ -237,7 +252,6 @@ def check_duplicates(df: pd.DataFrame) -> pd.DataFrame:
                 ]
 
             if not candidates_coord.empty:
-                # Trùng tọa độ luôn là Cảnh báo trùng (không xét Người tạo)
                 severity_levels.add("Cảnh báo trùng")
                 duplicate_ids.update(candidates_coord["ID"].tolist())
                 duplicate_creators.update(
@@ -245,6 +259,7 @@ def check_duplicates(df: pd.DataFrame) -> pd.DataFrame:
                 )
                 reason_details.append("Trùng tọa độ (Tọa độ trùng 100% hoặc gần đúng)")
 
+        # Nếu có bất kỳ rule nào khớp → đây là bản trùng
         if duplicate_ids:
             # Xác định mức độ tổng hợp: nếu có Cảnh báo thì ưu tiên
             if "Cảnh báo trùng" in severity_levels:
@@ -254,11 +269,9 @@ def check_duplicates(df: pd.DataFrame) -> pd.DataFrame:
 
             # Thông tin trùng: địa chỉ +/hoặc tọa độ
             info_duplicated: List[str] = []
-            # Địa chỉ theo thứ tự yêu cầu
             addr_text = format_address(row)
             if addr_text:
                 info_duplicated.append(f"Địa chỉ: {addr_text}")
-            # Tọa độ nếu có
             coord_text = str(row.get(COORD_COL, "")).strip()
             if coord_text:
                 info_duplicated.append(f"Tọa độ: {coord_text}")
@@ -300,13 +313,14 @@ def run_app() -> None:  # pragma: no cover - chỉ chạy trên Streamlit
         Công cụ này giúp kiểm tra **hồ sơ Đất ở** đang ở trạng thái
         **“Phê duyệt”** xem có trùng với các hồ sơ **“Hoàn thành”** trước đó hay không.
 
-        **Rule kiểm tra trùng (rút gọn):**
+        **Rule kiểm tra trùng (tóm tắt):**
         - Trùng 5 thông tin địa chỉ  
           *(Tỉnh/Thành phố, Quận/Huyện/Thị xã, Xã/Phường, Đường/Phố, Số nhà)*  
           + Cùng Người tạo → **Cảnh báo trùng**  
           + Khác Người tạo → **Nghi ngờ trùng**  
+
         - Trùng tọa độ (kể cả khi có thêm/bớt vài số thập phân phía sau),
-          thời điểm thu thập sau hồ sơ Hoàn thành → **Cảnh báo trùng**
+          và thời điểm thu thập sau hồ sơ Hoàn thành → **Cảnh báo trùng**
         """
     )
 
