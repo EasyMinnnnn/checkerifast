@@ -50,6 +50,8 @@ Output chung cho cả hai nhóm:
 from __future__ import annotations
 
 from typing import Optional, List, Dict, Any, Set
+import io
+
 import pandas as pd
 
 try:
@@ -399,13 +401,18 @@ def run_app() -> None:  # pragma: no cover
         st.error(f"⚠ Phát hiện {len(dup_df)} hồ sơ trùng hoặc nghi ngờ trùng.")
         st.dataframe(dup_df, use_container_width=True)
 
-        # Xuất CSV với UTF-8 BOM để Excel đọc đúng tiếng Việt
-        csv_bytes = dup_df.to_csv(index=False).encode("utf-8-sig")
+        # ===== TẢI VỀ DƯỚI DẠNG EXCEL .XLSX =====
+        output = io.BytesIO()
+        # cần thư viện openpyxl trong requirements.txt
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            dup_df.to_excel(writer, index=False, sheet_name="Duplicates")
+        output.seek(0)
+
         st.download_button(
-            label="⬇️ Tải danh sách trùng (CSV)",
-            data=csv_bytes,
-            file_name="detected_duplicates.csv",
-            mime="text/csv",
+            label="⬇️ Tải danh sách trùng (Excel)",
+            data=output,
+            file_name="detected_duplicates.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
 
