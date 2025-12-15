@@ -2,49 +2,24 @@
 duplicate_checker.py
 
 Công cụ Streamlit để kiểm tra trùng hồ sơ trước khi phê duyệt.
-Dành cho dữ liệu ĐẤT Ở (Land) từ Excel iFast.
+Hỗ trợ 2 loại:
+- ĐẤT Ở (Land)
+- CHUNG CƯ (Apartment)
 
-Các nhóm kiểm tra trùng:
+ĐẤT Ở: giữ nguyên logic hiện tại của bạn.
 
-A. Phê duyệt vs Hoàn thành
---------------------------
-1) TRÙNG TỌA ĐỘ (ưu tiên, chắc chắn):
-   - Tọa độ chuẩn hóa (coord_norm) trùng nhau
-   - 'Thời điểm thu thập thông tin' của hồ sơ Phê duyệt > hồ sơ Hoàn thành
-   → Luôn gắn nhãn: CẢNH BÁO TRÙNG (không xét Người tạo)
-   → Cột hiển thị: TỌA ĐỘ
+CHUNG CƯ: rule check trùng theo:
+- Tỉnh/Thành phố (cột W)
+- Dự án/Khu đô thị/Khu phân lô (cột AB)
+- Địa chỉ căn hộ/sàn (cột AD)
 
-2) TRÙNG ĐỊA CHỈ (5 cột W,X,Y,Z,AE):
-   - Trùng 5 thông tin:
-        Tỉnh/Thành phố
-        Quận/Huyện/Thị xã
-        Xã/Phường
-        Đường/Phố
-        Số nhà
-   - 'Thời điểm thu thập thông tin' của hồ sơ Phê duyệt > hồ sơ Hoàn thành
-   - Nếu cùng Người tạo  → CẢNH BÁO TRÙNG
-   - Nếu khác Người tạo → NGHI NGỜ TRÙNG
-   → Cột hiển thị: ĐỊA CHỈ (nếu không có trùng tọa độ)
-
-B. Hoàn thành vs Hoàn thành
----------------------------
-- So sánh các hồ sơ đều ở trạng thái 'Hoàn thành' với nhau
-- Chỉ xét các hồ sơ Hoàn thành có 'Thời điểm thu thập thông tin' nhỏ hơn hồ sơ đang xét
-- Rule giống phần A:
-    + Trùng tọa độ → CẢNH BÁO TRÙNG
-    + Trùng địa chỉ:
-        * Cùng Người tạo → CẢNH BÁO TRÙNG
-        * Khác Người tạo → NGHI NGỜ TRÙNG
-
-Output chung cho cả hai nhóm:
-- ID                : ID của hồ sơ bị coi là trùng (hồ sơ về sau)
-- Người tạo         : Người tạo của hồ sơ đó
-- Lý do trùng       : Cảnh báo / Nghi ngờ + mô tả chi tiết
-- Địa chỉ/Tọa độ trùng:
-    + Nếu có trùng tọa độ → chỉ hiển thị tọa độ (cột AF)
-    + Nếu chỉ trùng địa chỉ → hiển thị Địa chỉ: Số nhà – Đường – Xã – Quận – Tỉnh
-- ID trùng          : các ID trước đó mà hồ sơ này trùng (ngăn cách '; ')
-- Người tạo trùng   : Người tạo tương ứng các ID trùng
+Output:
+- ID
+- Người tạo
+- Lý do trùng
+- Địa chỉ/Tọa độ trùng
+- ID trùng
+- Người tạo trùng
 """
 
 from __future__ import annotations
@@ -64,12 +39,20 @@ except ImportError:  # pragma: no cover
 #  Constants
 # ==========================
 
+# ---- ĐẤT Ở (giữ nguyên)
 ADDR_COLS = [
     "Tỉnh/Thành phố",       # W
     "Quận/Huyện/Thị xã",    # X
     "Xã/Phường",            # Y
     "Đường/Phố",            # Z
     "Số nhà",               # AE
+]
+
+# ---- CHUNG CƯ (mới)
+CHUNGCU_COLS = [
+    "Tỉnh/Thành phố",                 # W
+    "Dự án/Khu đô thị/Khu phân lô",    # AB
+    "Địa chỉ căn hộ/sàn",              # AD
 ]
 
 CREATOR_COL = "Người tạo"                     # cột E
@@ -85,6 +68,11 @@ ID_COL = "ID"
 
 def build_addr_key(row: pd.Series) -> str:
     parts = [str(row.get(col, "")).strip().lower() for col in ADDR_COLS]
+    return "||".join(parts)
+
+
+def build_chungcu_key(row: pd.Series) -> str:
+    parts = [str(row.get(col, "")).strip().lower() for col in CHUNGCU_COLS]
     return "||".join(parts)
 
 
@@ -113,23 +101,28 @@ def format_address(row: pd.Series) -> str:
     return " – ".join([p for p in parts if p])
 
 
+def format_chungcu_info(row: pd.Series) -> str:
+    """Dự án/Khu đô thị/Khu phân lô – Địa chỉ căn hộ/sàn – Tỉnh/Thành phố."""
+    parts = [
+        str(row.get("Dự án/Khu đô thị/Khu phân lô", "")).strip(),
+        str(row.get("Địa chỉ căn hộ/sàn", "")).strip(),
+        str(row.get("Tỉnh/Thành phố", "")).strip(),
+    ]
+    return " – ".join([p for p in parts if p])
+
+
 # ==========================
-#  Core Logic
+#  Core Logic (ĐẤT Ở - giữ nguyên)
 # ==========================
 
 def _prepare(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     """Chuẩn hóa chung: key địa chỉ, tọa độ, thời gian; tách nhóm trạng thái."""
-    # check required columns
-    required_cols = ADDR_COLS + [
-        CREATOR_COL, TIME_COL, COORD_COL, STATUS_COL, ID_COL
-    ]
+    required_cols = ADDR_COLS + [CREATOR_COL, TIME_COL, COORD_COL, STATUS_COL, ID_COL]
     for col in required_cols:
         if col not in df.columns:
             raise ValueError(f"Thiếu cột: {col}")
 
     df = df.copy()
-
-    # chuẩn hóa
     df["addr_key"] = df.apply(build_addr_key, axis=1)
     df["coord_norm"] = df[COORD_COL].apply(normalize_coord)
     df["time_norm"] = pd.to_datetime(df[TIME_COL], dayfirst=True, errors="coerce")
@@ -138,11 +131,7 @@ def _prepare(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     hoan_thanh = df[df[STATUS_COL] == "Hoàn thành"].copy()
     phe_duyet = df[df[STATUS_COL] == "Phê duyệt"].copy()
 
-    return {
-        "all": df,
-        "hoan_thanh": hoan_thanh,
-        "phe_duyet": phe_duyet,
-    }
+    return {"all": df, "hoan_thanh": hoan_thanh, "phe_duyet": phe_duyet}
 
 
 def _build_groups(hoan_thanh: pd.DataFrame):
@@ -161,7 +150,6 @@ def _collect_result(
     severity_label: str,
     reason_details: List[str],
 ) -> Dict[str, Any]:
-    # ưu tiên hiển thị tọa độ nếu có trùng tọa độ
     if has_coord_dup:
         info = f"Tọa độ: {row.get(COORD_COL, '')}"
     elif has_addr_dup:
@@ -181,7 +169,7 @@ def _collect_result(
 
 def check_duplicates(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Trả về bảng trùng bao gồm:
+    (ĐẤT Ở) Trả về bảng trùng bao gồm:
     - Phê duyệt vs Hoàn thành
     - Hoàn thành vs Hoàn thành
     """
@@ -218,6 +206,7 @@ def check_duplicates(df: pd.DataFrame) -> pd.DataFrame:
 
             if not subset.empty:
                 has_addr_dup = True
+                # cùng người tạo / khác người tạo
                 same_creator = subset[subset["creator_norm"] == creator]
                 diff_creator = subset[subset["creator_norm"] != creator]
 
@@ -255,7 +244,7 @@ def check_duplicates(df: pd.DataFrame) -> pd.DataFrame:
 
         if duplicate_ids:
             if severity is None:
-                severity = "Nghi ngờ trùng"  # fallback, về lý thuyết không xảy ra
+                severity = "Nghi ngờ trùng"
             results.append(
                 _collect_result(
                     row=row,
@@ -348,6 +337,79 @@ def check_duplicates(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ==========================
+#  Core Logic (CHUNG CƯ - mới)
+# ==========================
+
+def check_duplicates_chungcu(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    (CHUNG CƯ) Check trùng theo:
+    - Tỉnh/Thành phố (W)
+    - Dự án/Khu đô thị/Khu phân lô (AB)
+    - Địa chỉ căn hộ/sàn (AD)
+
+    Mức độ:
+    - Cảnh báo trùng: có ít nhất 1 bản ghi trùng trước đó cùng Người tạo
+    - Nghi ngờ trùng: chỉ trùng với Người tạo khác
+    """
+    required_cols = CHUNGCU_COLS + [CREATOR_COL, ID_COL]
+    for col in required_cols:
+        if col not in df.columns:
+            raise ValueError(f"Thiếu cột: {col}")
+
+    df = df.copy()
+    df["creator_norm"] = df[CREATOR_COL].astype(str).str.strip()
+    df["chungcu_key"] = df.apply(build_chungcu_key, axis=1)
+
+    # bỏ các dòng key rỗng hoàn toàn
+    valid_mask = df["chungcu_key"].str.replace("|", "", regex=False).str.strip().ne("")
+    df = df[valid_mask].copy()
+
+    # group theo key
+    groups = df.groupby("chungcu_key", sort=False).groups
+
+    results: List[Dict[str, Any]] = []
+
+    for key, idx in groups.items():
+        if idx is None or len(idx) <= 1:
+            continue
+
+        group_df = df.loc[idx].copy()
+
+        # duyệt từng row và coi các row khác trong group là "trùng"
+        for _, row in group_df.iterrows():
+            row_id = row[ID_COL]
+            creator = row["creator_norm"]
+
+            others = group_df[group_df[ID_COL] != row_id]
+            if others.empty:
+                continue
+
+            same_creator = others[others["creator_norm"] == creator]
+            diff_creator = others[others["creator_norm"] != creator]
+
+            if not same_creator.empty:
+                severity = "Cảnh báo trùng"
+                reason = "Chung cư – Trùng Tỉnh + Dự án/KĐT/Khu phân lô + Địa chỉ căn hộ/sàn (cùng Người tạo)"
+            else:
+                severity = "Nghi ngờ trùng"
+                reason = "Chung cư – Trùng Tỉnh + Dự án/KĐT/Khu phân lô + Địa chỉ căn hộ/sàn (khác Người tạo)"
+
+            duplicate_ids = set(others[ID_COL].tolist())
+            duplicate_creators = set(others["creator_norm"].tolist())
+
+            results.append({
+                "ID": row_id,
+                "Người tạo": creator,
+                "Lý do trùng": f"{severity} – {reason}",
+                "Địa chỉ/Tọa độ trùng": f"Chung cư: {format_chungcu_info(row)}",
+                "ID trùng": "; ".join(str(x) for x in sorted(duplicate_ids)),
+                "Người tạo trùng": "; ".join(sorted(duplicate_creators)),
+            })
+
+    return pd.DataFrame(results)
+
+
+# ==========================
 #  Streamlit App
 # ==========================
 
@@ -358,19 +420,41 @@ def run_app() -> None:  # pragma: no cover
     st.set_page_config(page_title="iFast Duplicate Checker", layout="wide")
     st.title("🧮 iFast – Công cụ kiểm tra trùng hồ sơ")
 
-    st.markdown(
-        """
-        Công cụ kiểm tra trùng **hồ sơ Đất ở** trong iFast.
-
-        **Nhóm kiểm tra:**
-        - Phê duyệt vs Hoàn thành (hồ sơ đang trình so với hồ sơ đã hoàn thành)
-        - Hoàn thành vs Hoàn thành (các hồ sơ đã hoàn thành trùng nhau)
-
-        **Ưu tiên hiển thị:**
-        - Nếu trùng tọa độ → chỉ hiển thị tọa độ
-        - Nếu chỉ trùng địa chỉ → hiển thị địa chỉ
-        """
+    asset_type = st.radio(
+        "Chọn loại hồ sơ kiểm tra",
+        ["Đất ở", "Chung cư"],
+        horizontal=True
     )
+
+    if asset_type == "Đất ở":
+        st.markdown(
+            """
+            Công cụ kiểm tra trùng **hồ sơ Đất ở** trong iFast.
+
+            **Nhóm kiểm tra:**
+            - Phê duyệt vs Hoàn thành (hồ sơ đang trình so với hồ sơ đã hoàn thành)
+            - Hoàn thành vs Hoàn thành (các hồ sơ đã hoàn thành trùng nhau)
+
+            **Ưu tiên hiển thị:**
+            - Nếu trùng tọa độ → chỉ hiển thị tọa độ
+            - Nếu chỉ trùng địa chỉ → hiển thị địa chỉ
+            """
+        )
+    else:
+        st.markdown(
+            """
+            Công cụ kiểm tra trùng **hồ sơ Chung cư** trong iFast.
+
+            **Rule check trùng:**
+            - Tỉnh/Thành phố (W)
+            - Dự án/Khu đô thị/Khu phân lô (AB)
+            - Địa chỉ căn hộ/sàn (AD)
+
+            **Mức độ:**
+            - Cùng Người tạo → Cảnh báo trùng
+            - Khác Người tạo → Nghi ngờ trùng
+            """
+        )
 
     uploaded = st.file_uploader("📥 Tải file Excel (.xlsx) xuất từ iFast", type=["xlsx"])
     if uploaded is None:
@@ -390,7 +474,10 @@ def run_app() -> None:  # pragma: no cover
     st.subheader("📊 Kết quả kiểm tra trùng")
 
     try:
-        dup_df = check_duplicates(df)
+        if asset_type == "Đất ở":
+            dup_df = check_duplicates(df)
+        else:
+            dup_df = check_duplicates_chungcu(df)
     except Exception as e:
         st.error(f"Lỗi khi kiểm tra trùng: {e}")
         return
@@ -401,9 +488,7 @@ def run_app() -> None:  # pragma: no cover
         st.error(f"⚠ Phát hiện {len(dup_df)} hồ sơ trùng hoặc nghi ngờ trùng.")
         st.dataframe(dup_df, use_container_width=True)
 
-        # ===== TẢI VỀ DƯỚI DẠNG EXCEL .XLSX =====
         output = io.BytesIO()
-        # cần thư viện openpyxl trong requirements.txt
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             dup_df.to_excel(writer, index=False, sheet_name="Duplicates")
         output.seek(0)
